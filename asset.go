@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -10,21 +11,33 @@ import (
 )
 
 const (
-	KeyAssets   = "assets"
-	KeyAuctions = "auctions"
+	KeyAssets = "assets"
 )
 
 type Asset struct {
 	ID             []byte
 	Owner          []byte
-	PendingAuction []byte
+	PendingAuction *Auction
 }
 
 type Auction struct {
-	ID            []byte
-	Ended         bool
-	HighestBid    int64
+	ID       []byte
+	Platform string
+}
+
+type AuctionResult struct {
+	Auction
 	HighestBidder []byte
+}
+
+type BindAuctionArgs struct {
+	AssetID []byte
+	Auction Auction
+}
+
+type EndAuctionArgs struct {
+	AssetID       []byte
+	AuctionResult AuctionResult
 }
 
 func main() {
@@ -55,9 +68,6 @@ func (cc *AssetChaincode) Invoke(
 
 	case "addAsset":
 		return nil, cc.addAsset()
-
-	case "updateAuction":
-		return nil, cc.updateAuction()
 
 	case "bindAuction":
 		return nil, cc.bindAuction()
@@ -95,13 +105,8 @@ func (cc *AssetChaincode) addAsset() error {
 	return cc.setAsset(asset)
 }
 
-type SetAuctionArgs struct {
-	AssetID   []byte
-	AuctionID []byte
-}
-
 func (cc *AssetChaincode) bindAuction() error {
-	var args SetAuctionArgs
+	var args BindAuctionArgs
 	err := json.Unmarshal([]byte(cc.args[0]), &args)
 	if err != nil {
 		return err
@@ -110,65 +115,31 @@ func (cc *AssetChaincode) bindAuction() error {
 	if err != nil {
 		return err
 	}
-	asset.PendingAuction = args.AuctionID
-
+	asset.PendingAuction = &args.Auction
 	return cc.setAsset(asset)
 }
 
-func (cc *AssetChaincode) updateAuction() error {
-	var auction Auction
-	err := json.Unmarshal([]byte(cc.args[0]), &auction)
-	if err != nil {
-		return err
-	}
-	return cc.setAuction(auction)
-}
-
 func (cc *AssetChaincode) endAuction() error {
-	assetID, err := base64.StdEncoding.DecodeString(cc.args[0])
+	var args EndAuctionArgs
+	err := json.Unmarshal([]byte(cc.args[0]), &args)
 	if err != nil {
 		return err
 	}
-	asset, err := cc.getAsset(assetID)
+	asset, err := cc.getAsset(args.AssetID)
 	if err != nil {
 		return err
 	}
 	if asset.PendingAuction == nil {
 		return fmt.Errorf("no pending auction")
 	}
+	if !bytes.Equal(asset.PendingAuction.ID, args.AuctionResult.ID) {
+		return fmt.Errorf("invalid auction result")
+	}
 
-	auction, err := cc.getAuction(asset.PendingAuction)
-	if err != nil {
-		return err
-	}
-	if !auction.Ended {
-		return fmt.Errorf("auction not ended yet")
-	}
 	// transfer asset to winner
-	asset.Owner = auction.HighestBidder
+	asset.Owner = args.AuctionResult.HighestBidder
 	asset.PendingAuction = nil
 	return cc.setAsset(asset)
-}
-
-func (cc *AssetChaincode) getAuction(auctionID []byte) (Auction, error) {
-	var auction Auction
-	b, err := cc.stub.GetState(cc.makeAuctionKey(auctionID))
-	if err != nil {
-		return auction, err
-	}
-	if b == nil {
-		return auction, fmt.Errorf("auction not found")
-	}
-	err = json.Unmarshal(b, &auction)
-	return auction, err
-}
-
-func (cc *AssetChaincode) setAuction(auction Auction) error {
-	b, err := json.Marshal(auction)
-	if err != nil {
-		return err
-	}
-	return cc.stub.PutState(cc.makeAuctionKey(auction.ID), b)
 }
 
 // type AuctionRequest struct {
@@ -225,8 +196,4 @@ func (cc *AssetChaincode) setAsset(asset Asset) error {
 
 func (cc *AssetChaincode) makeAssetKey(assetID []byte) string {
 	return fmt.Sprintf("%s_%s", KeyAssets, assetID)
-}
-
-func (cc *AssetChaincode) makeAuctionKey(auctionID []byte) string {
-	return fmt.Sprintf("%s_%s", KeyAuctions, auctionID)
 }
